@@ -2,6 +2,8 @@
 
 This fork of *blue-merle* is an OpenWrt package for the **GL.iNet GL-XE3000 “Puli AX”** 5G mobile router. It aims to reduce forensic traceability by automating a set of privacy-related hygiene steps on every boot and providing a small LuCI UI + CLI for modem actions.
 
+Standalone fork: talks to the modem directly via `/dev/ttyUSB2` (pyserial), with no dependency on GL.iNet's SDK or on `quectel-5g-tools`.
+
 Features:
 
 1.  IMEI management (only if supported by the modem firmware)
@@ -11,26 +13,23 @@ Features:
 
 ## Compatibility
 
-This fork targets **GL.iNet GL-XE3000 (Puli AX)**.
+This fork targets **GL.iNet GL-XE3000 (Puli AX)** running **vanilla OpenWrt** (not GL.iNet's stock SDK firmware).
 
 The package installer checks `/tmp/sysinfo/model` and will warn/prompt if you try to install it on a different model.
 
 IMEI writes are **modem/firmware-dependent** on Puli AX (Quectel RM520N-GL). This fork will keep read-only functionality (read IMEI/IMSI, RF off, shutdown) even when IMEI writes are not available.
+
+Some original features from the upstream Mudi package have no equivalent on a vanilla-OpenWrt Puli AX and are inert no-ops here: the `gl_clients` client-database wipe (GL.iNet's proprietary client-tracking daemon isn't present on vanilla builds) and `glconfig.general.macclone_addr` (GL.iNet-proprietary UCI section). Both are guarded so they don't fail, they just do nothing.
 
 ## Installation
 
 Build (or obtain) an `ipk` for your GL-XE3000 firmware/architecture, copy it to the router (for example to `/tmp`), then install it:
 
 ```sh
-opkg update
-opkg install /tmp/blue-merle_*.ipk
+apk add /tmp/blue-merle_*.apk
 ```
 
-To upgrade/reinstall:
-
-```sh
-opkg install --force-reinstall /tmp/blue-merle_*.ipk
-```
+(Or `opkg install` if your build predates the switch to `apk`.)
 
 ## Usage
 
@@ -51,6 +50,8 @@ blue-merle
 
 The CLI can guide you through an RF-off / SIM swap / (optional) IMEI update flow. On Puli AX, IMEI updates are only attempted when the modem firmware allows IMEI writes.
 
+**After a successful IMEI write, reboot the router** (not just the modem) to fully apply the change. See "Implementation details" below for why.
+
 ### Web
 
 Open GL.iNet “Advanced Settings” (LuCI) and find **Blue Merle** under the **Network** menu.
@@ -70,13 +71,12 @@ On GL-XE3000, there is no OLED display; any user prompts are via LuCI/SSH output
 
 ## Building
 
-This repository is an OpenWrt “package feed” style project (no compiled code). You can build an `ipk` using an OpenWrt buildroot or the appropriate GL.iNet SDK that matches your router firmware.
-
-This repo also includes a GitHub Actions workflow (`.github/workflows/ci.yml`) which builds an `ipk` for GL-XE3000 using the OpenWrt SDK (currently configured for OpenWrt 23.05 `mediatek/filogic`).
+This repository is an OpenWrt “package feed” style project (no compiled code). You can build an `ipk`/`apk` using an OpenWrt buildroot pointed at OpenWrt 25.12 (mediatek/filogic).
 
 ```sh
 git clone https://github.com/openwrt/openwrt
 cd openwrt
+git checkout openwrt-25.12
 git clone <your-fork-url> package/blue-merle
 ./scripts/feeds update -a && ./scripts/feeds install -a
 make distclean && make clean
@@ -87,15 +87,17 @@ make
 make package/blue-merle/compile
 ```
 
-The resulting `ipk` will be in `./bin/packages/` under your target architecture.
+The resulting package will be in `./bin/packages/` under your target architecture.
 
 ## Implementation details
 
 ### Modem actions / IMEI management
 
-GL-XE3000 (Puli AX) uses a Quectel **RM520N-GL** 5G modem. This fork talks to the modem using GL.iNet’s `gl_modem` helper and standard AT commands (for example `AT+GSN` for IMEI and `AT+CIMI` for IMSI).
+GL-XE3000 (Puli AX) uses a Quectel **RM520N-GL** 5G modem on **PCIe/MHI** (not USB data path). This fork talks to the modem directly over `/dev/ttyUSB2` using pyserial and standard AT commands (for example `AT+GSN` for IMEI and `AT+CIMI` for IMSI) — no GL.iNet SDK helper, no dependency on `quectel-5g-tools`.
 
-Whether IMEI writes work is firmware-dependent. When IMEI writes are not supported, *blue-merle* will not attempt to change IMEI and will instead expose read-only + RF/shutdown functionality.
+**Important PCIe/MHI caveat:** on this hardware, a full modem reboot (`AT+CFUN=1,1`) while the PCIe link is active can wedge the host's PCIe port into an unrecoverable error state (`CmpltTO` cascade), recoverable only by a full host reboot. This fork therefore never issues `AT+CFUN=1,1`. IMEI writes bracket `AT+EGMR` with `AT+CFUN=0` / `AT+CFUN=1` (functionality-mode toggle, not a modem reboot) instead, and stopping/restarting ModemManager around the write. If the new IMEI can't be verified immediately after the write, the tooling asks you to reboot the *router* rather than retrying with any kind of modem-level reset.
+
+Whether IMEI writes work at all is firmware-dependent. When IMEI writes are not supported, *blue-merle* will not attempt to change IMEI and will instead expose read-only + RF/shutdown functionality.
 
 Changing modem RF state and (if supported) IMEI will disrupt connectivity. Plan operations accordingly.
 
@@ -107,11 +109,17 @@ Note: the current implementation assumes two `wifi-iface` sections (`[0]` and `[
 
 ### MAC address log wiping
 
-If the firmware stores connected-client history under `/etc/oui-tertf`, *blue-merle* will shred the on-flash database and mount a `tmpfs` over that directory so the client DB is RAM-only while keeping the UI functional.
+If the firmware stores connected-client history under `/etc/oui-tertf`, *blue-merle* will shred the on-flash database and mount a `tmpfs` over that directory so the client DB is RAM-only while keeping the UI functional. On vanilla OpenWrt (no `gl_clients`/`/etc/oui-tertf`), this is a no-op.
 
 ### MAC Address Randomization
 
-*Blue-merle* sets randomized MAC addresses for the WAN device and for GL.iNet “MAC clone” settings on boot. If you use repeater mode or upstream MAC filtering, this may disrupt connectivity until you adjust your upstream configuration.
+*Blue-merle* sets a randomized MAC address for the WAN device on boot (`network.@device[1].macaddr`). If you use repeater mode or upstream MAC filtering, this may disrupt connectivity until you adjust your upstream configuration.
+
+## Origin
+
+- Original *blue-merle* for the GL.iNet Mudi: [SR Labs](https://github.com/srlabs/blue-merle) (Matthias, BSD-3-Clause)
+- Ported to GL-XE3000 (Puli AX): [sureserverman/blue-merle-xe3000](https://github.com/sureserverman/blue-merle-xe3000)
+- This fork: replaces GL.iNet's `gl_modem` helper and `/dev/mhi_DUN` with a standalone pyserial-based AT layer (`/dev/ttyUSB2`) for vanilla OpenWrt 25.12, with PCIe/MHI-safe IMEI write handling. No dependency on GL.iNet's SDK or on `quectel-5g-tools`.
 
 ## Name origin: blue merle
 

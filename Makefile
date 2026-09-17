@@ -1,12 +1,11 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=blue-merle
-PKG_VERSION:=3.0.0
+PKG_VERSION:=1.0.0
 PKG_RELEASE:=$(AUTORELEASE)
 
-PKG_MAINTAINER:=Matthias <matthias@srlabs.de>
+PKG_MAINTAINER:=carloscomputer <post@carlos.berlin>
 PKG_LICENSE:=BSD-3-Clause
-
 include $(INCLUDE_DIR)/package.mk
 
 define Package/blue-merle
@@ -21,6 +20,12 @@ define Package/blue-merle/description
 	traceability of the GL-XE3000 Puli AX 5G mobile router.
 	Features: MAC/BSSID randomization on every boot, volatile client
 	database, IMEI management (if supported by modem firmware).
+
+	Originally by Matthias <matthias@srlabs.de> (SR Labs) for the
+	GL.iNet Mudi; ported to GL-XE3000 by sureserverman; this fork
+	replaces GL.iNet's gl_modem helper with a standalone pyserial-based
+	AT command layer (/dev/ttyUSB2) for vanilla OpenWrt 25.12, with no
+	dependency on quectel-5g-tools.
 endef
 
 define Build/Configure
@@ -35,7 +40,8 @@ define Package/blue-merle/install
 	$(INSTALL_BIN) ./files/etc/gl-switch.d/* $(1)/etc/gl-switch.d/
 	$(INSTALL_BIN) ./files/usr/bin/* $(1)/usr/bin/
 	$(INSTALL_BIN) ./files/usr/libexec/blue-merle $(1)/usr/libexec/blue-merle
-	$(INSTALL_BIN) ./files/lib/blue-merle/imei_generate.py  $(1)/lib/blue-merle/imei_generate.py
+	$(INSTALL_BIN) ./files/lib/blue-merle/at_send.py $(1)/lib/blue-merle/at_send.py
+	$(INSTALL_BIN) ./files/lib/blue-merle/imei_generate.py $(1)/lib/blue-merle/imei_generate.py
 endef
 
 define Package/blue-merle/preinst

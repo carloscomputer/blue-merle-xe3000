@@ -1,8 +1,6 @@
 #!/usr/bin/env ash
 
 # This script provides helper functions for blue-merle
-# GL-XE3000 (Puli AX): standalone modem access via /dev/ttyUSB2
-# (pyserial), no dependency on gl_modem or quectel-5g-tools.
 
 . /lib/blue-merle/probe.sh
 
@@ -20,20 +18,21 @@ RESET_BSSIDS () {
     # you need to reset wifi for changes to apply, i.e. executing "wifi"
 }
 
+
 RANDOMIZE_MACADDR () {
     uci set network.@device[1].macaddr=`UNICAST_MAC_GEN`
+    uci set glconfig.general.macclone_addr=`UNICAST_MAC_GEN`
     uci commit network
-    # glconfig.general.macclone_addr intentionally omitted: GL.iNet-
-    # proprietary UCI section, does not exist on vanilla OpenWrt.
 }
 
 READ_ICCID() {
-    python3 /lib/blue-merle/at_send.py --retries 3 'AT+CCID' | grep -w -E "[0-9]{18,20}"
+    gl_modem -B $BM_MODEM_BUS AT AT+CCID
 }
+
 
 READ_IMEI() {
     local imei
-    imei=$(python3 /lib/blue-merle/at_send.py --retries 3 'AT+GSN' | grep -w -E "[0-9]{14,15}")
+    imei=$(gl_modem -B $BM_MODEM_BUS AT AT+GSN | grep -w -E "[0-9]{14,15}")
     if [ -z "$imei" ]; then
         bm_log "Failed to read IMEI"
         return 1
@@ -43,13 +42,14 @@ READ_IMEI() {
 
 READ_IMSI() {
     local imsi
-    imsi=$(python3 /lib/blue-merle/at_send.py --retries 3 'AT+CIMI' | grep -w -E "[0-9]{6,15}")
+    imsi=$(gl_modem -B $BM_MODEM_BUS AT AT+CIMI | grep -w -E "[0-9]{6,15}")
     if [ -z "$imsi" ]; then
         bm_log "Failed to read IMSI"
         return 1
     fi
     echo "$imsi"
 }
+
 
 GENERATE_IMEI() {
     local seed=$(head -100 /dev/urandom | tr -dc "0123456789" | head -c10)

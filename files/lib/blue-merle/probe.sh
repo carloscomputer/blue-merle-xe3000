@@ -1,8 +1,10 @@
 #!/usr/bin/env ash
 
 # blue-merle probe library for GL-XE3000 (Puli AX)
-
-BM_MODEM_BUS="1-1.2"
+# Standalone: talks directly to /dev/ttyUSB2 via pyserial, no dependency
+# on quectel-5g-tools or GL.iNet's gl_modem. Vanilla OpenWrt's
+# mhi_pci_generic driver has no /dev/mhi_DUN (that was GL.iNet's
+# proprietary pcie_mhi driver's node).
 
 bm_log() {
     logger -p notice -t blue-merle "$1"
@@ -17,26 +19,16 @@ bm_can_write_imei() {
         return $?
     fi
 
-    if [ ! -c /dev/mhi_DUN ]; then
+    if [ ! -c /dev/ttyUSB2 ]; then
         echo 0 > "$cache"
-        bm_log "IMEI write not supported: /dev/mhi_DUN not found"
+        bm_log "IMEI write not supported: /dev/ttyUSB2 not found"
         return 1
     fi
 
     local resp
-    resp=$(python3 -c "
-import serial
-try:
-    with serial.Serial('/dev/mhi_DUN', 9600, timeout=3, exclusive=True) as ser:
-        ser.write(b'AT+EGMR=0,7\r')
-        output = ser.read(64)
-        if b'EGMR' in output or b'OK' in output:
-            print('OK')
-except:
-    pass
-" 2>/dev/null)
+    resp=$(python3 /lib/blue-merle/at_send.py --retries 3 'AT+EGMR=0,7' 2>/dev/null)
 
-    if [ "$resp" = "OK" ]; then
+    if echo "$resp" | grep -qE "EGMR|OK"; then
         echo 1 > "$cache"
         return 0
     fi

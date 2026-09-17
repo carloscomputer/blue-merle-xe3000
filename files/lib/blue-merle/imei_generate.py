@@ -2,10 +2,13 @@
 import random
 import string
 import argparse
-import serial
 import re
+import sys
 from functools import reduce
 from enum import Enum
+
+sys.path.insert(0, '/lib/blue-merle')
+from at_send import send as at_send
 
 
 class Modes(Enum):
@@ -36,67 +39,62 @@ imei_prefix = ["35674108", "35290611", "35397710", "35323210", "35384110",
 verbose = False
 mode = None
 
-# Serial global vars
-TTY = '/dev/mhi_DUN'
-BAUDRATE = 9600
-TIMEOUT = 3
+AT_RETRIES = 3
 
 
 def get_imsi():
-    if (verbose):
-        print(f'Obtaining Serial {TTY} with timeout {TIMEOUT}...')
-    with serial.Serial(TTY, BAUDRATE, timeout=TIMEOUT, exclusive=True) as ser:
-        if (verbose):
-            print('Getting IMSI')
-        ser.write(b'AT+CIMI\r')
-        output = ser.read(64)
-
-    if (verbose):
-        print(b'Output of AT+CIMI (Retrieve IMSI) command: ' + output)
-        print('Output is of type: ' + str(type(output)))
-    imsi_d = re.findall(b'[0-9]{15}', output)
-    if (verbose):
+    output = at_send('AT+CIMI', retries=AT_RETRIES)
+    if verbose:
+        print(f'Output of AT+CIMI (Retrieve IMSI) command: {output}')
+    imsi_d = re.findall(r'[0-9]{15}', output)
+    if verbose:
         print("TEST: Read IMSI is", imsi_d)
+    return "".join(imsi_d).encode()
 
-    return b"".join(imsi_d)
+
+def get_imei():
+    output = at_send('AT+GSN', retries=AT_RETRIES)
+    if verbose:
+        print(f'Output of AT+GSN (Retrieve IMEI) command: {output}')
+    imei_d = re.findall(r'[0-9]{15}', output)
+    if verbose:
+        print("TEST: Read IMEI is", imei_d)
+    return "".join(imei_d).encode()
 
 
 def set_imei(imei):
-    with serial.Serial(TTY, BAUDRATE, timeout=TIMEOUT, exclusive=True) as ser:
-        cmd = b'AT+EGMR=1,7,\"'+imei.encode()+b'\"\r'
-        ser.write(cmd)
-        output = ser.read(64)
+    # PCIe/MHI caution (RM520N-GL on GL-XE3000): AT+CFUN=1,1 forces a modem
+    # reboot, and a modem reboot while the PCIe link is up can wedge the
+    # host's PCIe port into an unrecoverable CmpltTO error storm -- the only
+    # way out at that point is a full host reboot. We NEVER issue CFUN=1,1
+    # here. AT+CFUN=0 / AT+CFUN=1 (no reset flag) is a functionality-mode
+    # toggle, not a modem reboot, and is the safe way to bracket the EGMR
+    # write. If the new IMEI isn't reflected immediately, we tell the
+    # caller to reboot the ROUTER (not just the modem) rather than
+    # retrying with a modem reset.
+    import subprocess
+    subprocess.run(["/etc/init.d/modemmanager", "stop"])
+    at_send('AT+CFUN=0', retries=AT_RETRIES)
 
-    if (verbose):
-        print(cmd)
-        print(b'Output of AT+EGMR (Set IMEI) command: ' + output)
-        print('Output is of type: ' + str(type(output)))
+    cmd = 'AT+EGMR=1,7,"' + imei + '"'
+    output = at_send(cmd, retries=AT_RETRIES)
+    if verbose:
+        print(f'Output of AT+EGMR (Set IMEI) command: {output}')
+
+    at_send('AT+CFUN=1', retries=AT_RETRIES)
+    subprocess.run(["/etc/init.d/modemmanager", "start"])
 
     new_imei = get_imei()
-    if (verbose):
-        print(b"New IMEI: "+new_imei+b" Old IMEI: "+imei.encode())
+    if verbose:
+        print(f"New IMEI: {new_imei} Old IMEI: {imei.encode()}")
 
     if new_imei == imei.encode():
         print("IMEI has been successfully changed.")
         return True
     else:
-        print("IMEI has not been successfully changed.")
+        print("IMEI write sent, but could not be verified immediately.")
+        print("Reboot the ROUTER (not just the modem) and check again with 'blue-merle read-imei'.")
         return False
-
-
-def get_imei():
-    with serial.Serial(TTY, BAUDRATE, timeout=TIMEOUT, exclusive=True) as ser:
-        ser.write(b'AT+GSN\r')
-        output = ser.read(64)
-
-    if (verbose):
-        print(b'Output of AT+GSN (Retrieve IMEI) command: ' + output)
-        print('Output is of type: ' + str(type(output)))
-    imei_d = re.findall(b'[0-9]{15}', output)
-    if (verbose):
-        print("TEST: Read IMEI is", imei_d)
-
-    return b"".join(imei_d)
 
 
 def generate_imei(imei_prefix, imsi_d):
